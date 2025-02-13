@@ -165,6 +165,28 @@ impl FlashInfo {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct Capability([u8; 8]);
+impl Capability {
+    pub fn from_bytes(data: [u8; 8]) -> Self {
+        Capability(data)
+    }
+
+    /// Can flash do direct LBA
+    pub fn direct_lba(&self) -> bool {
+        self.0[0] & 0x1 == 0x1 //TODO: Use a static/const value
+    }
+
+    // Can flash do First 4m Access
+    pub fn first_4m_access(&self) -> bool {
+        self.0[0] & 0x4 == 0x4 //TODO: Use a static/const value
+    }
+
+    pub fn inner(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 #[derive(Debug, thiserror::Error, Clone)]
 pub enum CommandBlockParseError {
     #[error("Invalid Command block signature: {0:x?}")]
@@ -238,6 +260,34 @@ impl CommandBlock {
             cd_opcode: 0,
             cd_address: 0,
             cd_length: 0x0,
+        }
+    }
+
+    pub fn capability() -> CommandBlock {
+        CommandBlock {
+            tag: fastrand::u32(..),
+            transfer_length: 8,
+            flags: Direction::In,
+            lun: 0,
+            cdb_length: 0x6,
+            cd_code: CommandCode::ReadCapability, // devices can be m_bEmmc or m_bDirectLba, this needs to be checked before knowing which command code to use.
+            cd_opcode: 0,
+            cd_address: 0,
+            cd_length: 0,
+        }
+    }
+
+    pub fn erase_blocks(first: u32, count: u16, lba: bool) -> CommandBlock {
+        CommandBlock {
+            tag: fastrand::u32(..),
+            transfer_length: 0,
+            flags: Direction::Out,
+            lun: 0,
+            cdb_length: 0xa,
+            cd_code: if lba {CommandCode::EraseLBA} else {CommandCode::EraseForce},
+            cd_opcode: 0,
+            cd_address: first,
+            cd_length: count,
         }
     }
 

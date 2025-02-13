@@ -1,10 +1,10 @@
 use std::{
     ffi::OsStr,
     fs::File,
-    io::{BufWriter, Read, Seek, SeekFrom, Write},
+    io::{self, BufWriter, Read, Seek, SeekFrom, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    thread::sleep,
+    thread::{self, sleep},
     time::Duration,
 };
 
@@ -16,18 +16,24 @@ use flate2::read::GzDecoder;
 use rockfile::boot::{
     RkBootEntry, RkBootEntryBytes, RkBootHeader, RkBootHeaderBytes, RkBootHeaderEntry,
 };
-use rockusb::libusb::{DeviceUnavalable, Transport};
 use rockusb::protocol::ResetOpcode;
+use rockusb::{
+    libusb::{DeviceUnavalable, Transport},
+    protocol::FlashInfo,
+};
 
-fn read_flash_info(mut transport: Transport) -> Result<()> {
-    let info = transport.flash_info()?;
+fn print_flash_info(info: &FlashInfo) {
     println!("Raw Flash Info: {:0x?}", info);
     println!(
         "Flash size: {} MB ({} sectors)",
         info.sectors() / 2048,
         info.sectors()
     );
+}
 
+fn read_flash_info(mut transport: Transport) -> Result<()> {
+    let info = transport.flash_info()?;
+    print_flash_info(&info);
     Ok(())
 }
 
@@ -38,6 +44,51 @@ fn reset_device(mut transport: Transport, opcode: ResetOpcode) -> Result<()> {
 
 fn read_chip_info(mut transport: Transport) -> Result<()> {
     println!("Chip Info: {:0x?}", transport.chip_info()?);
+    Ok(())
+}
+
+static MAX_BLOCKS_ERASE: u32 = 16;
+static MAX_LBA_ERASE: u32 = 1024;
+
+fn erase_flash(mut transport: Transport) -> Result<()> {
+    // Get flash info
+    let flash_info = transport.flash_info()?;
+    print_flash_info(&flash_info);
+
+    // Get flash id
+    let flash_id = transport.flash_id()?;
+    let is_emmc = flash_id.to_str() == "EMMC";
+
+    // Get flash capability
+    let capability = transport.capability()?;
+
+    let mut blocks_left = flash_info.sectors();
+    let mut first = 0;
+    let max_blocks = if capability.direct_lba() || is_emmc {
+        MAX_LBA_ERASE
+    } else {
+        MAX_BLOCKS_ERASE
+    };
+
+    let bar = progression::Bar::new(
+        blocks_left as u64,
+        progression::Config {
+            prefix: "Erasing blocks",
+            ..progression::Config::cargo()
+        },
+    );
+
+    while blocks_left > 0 {
+        let count = blocks_left.min(max_blocks);
+
+        transport.erase_blocks(first, count as u16, capability.direct_lba() || is_emmc)?;
+
+        blocks_left -= count;
+        first += count;
+
+        bar.inc(count as u64);
+    }
+
     Ok(())
 }
 
@@ -243,6 +294,7 @@ enum Command {
     },
     // Run/expose device as a network block device
     Nbd,
+    EraseFlash,
 }
 
 #[derive(ValueEnum, Clone, Debug)]
@@ -384,5 +436,6 @@ fn main() -> Result<()> {
         Command::FlashInfo => read_flash_info(transport),
         Command::ResetDevice { opcode } => reset_device(transport, opcode.into()),
         Command::Nbd => run_nbd(transport),
+        Command::EraseFlash => erase_flash(transport),
     }
 }
